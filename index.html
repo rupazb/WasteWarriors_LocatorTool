@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>PWMU Live Map</title>
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
+    #map {
+      height: 100%;
+      width: 100%;
+    }
+    #info-panel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 260px;
+  background: white;
+  padding: 12px;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  z-index: 1000;
+  font-family: Arial, sans-serif;
+}
+
+#info-panel h3 {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+#info-panel p {
+  font-size: 13px;
+  margin: 6px 0;
+}
+#search-panel {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: white;
+  padding: 10px;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  z-index: 1000;
+  font-family: Arial, sans-serif;
+}
+
+#search-panel input {
+  width: 120px;
+  margin: 4px 0;
+  padding: 4px;
+  font-size: 12px;
+}
+
+#search-panel button {
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+  </style>
+</head>
+
+<body>
+<div id="info-panel">
+  <h3>Village Analysis</h3>
+  <div id="info-content">
+    <p>Click on the map to analyse nearest facilities.</p>
+  </div>
+</div>
+<div id="search-panel">
+  <b>Go to Coordinates</b><br>
+  <input type="text" id="lat" placeholder="Latitude (e.g. 30.3165)">
+  <input type="text" id="lng" placeholder="Longitude (e.g. 78.0322)">
+  <button onclick="goToCoordinates()">Locate</button>
+</div>
+
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+const icons = {
+  PWMU: L.icon({
+    iconUrl: 'icons/pwmu.png',
+    iconSize: [24, 24]
+  }),
+  MRF: L.icon({
+    iconUrl: 'icons/mrf.png',
+    iconSize: [24, 24]
+  }),
+  WasteBank: L.icon({
+    iconUrl: 'icons/wastebank.png',
+    iconSize: [24, 24]
+  }),
+  Office: L.icon({
+    iconUrl: 'icons/office.png',
+    iconSize: [24, 24]
+  })
+};
+
+// Globals
+let map = L.map('map', { zoomControl: false }).setView([30.3, 78.0], 8);
+let facilitiesData = null;
+let villageMarker = null;
+let routeLayer = null;
+
+// Add basemap
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap contributors'
+}).addTo(map);
+
+// add zoom control at bottom-left
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+// added: legend control at bottom-right
+const legend = L.control({ position: 'bottomright' });
+legend.onAdd = function(map) {
+  const div = L.DomUtil.create('div', 'legend');
+  div.innerHTML = `
+    <div style="background:white;padding:8px;border-radius:6px;box-shadow:0 2px 6px rgba(0,0,0,0.2);font-family:Arial,sans-serif;font-size:13px;">
+      <b>Legend</b>
+      <div style="margin-top:6px;display:flex;align-items:center;"><span style="width:12px;height:12px;background:green;border:1px solid #000;border-radius:6px;display:inline-block;margin-right:8px;"></span>PWMU</div>
+      <div style="margin-top:6px;display:flex;align-items:center;"><span style="width:12px;height:12px;background:orange;border:1px solid #000;border-radius:6px;display:inline-block;margin-right:8px;"></span>MRF</div>
+      <div style="margin-top:6px;display:flex;align-items:center;"><span style="width:12px;height:12px;background:purple;border:1px solid #000;border-radius:6px;display:inline-block;margin-right:8px;"></span>WasteBank</div>
+      <div style="margin-top:6px;display:flex;align-items:center;"><span style="width:12px;height:12px;background:red;border:1px solid #000;border-radius:6px;display:inline-block;margin-right:8px;"></span>Office</div>
+    </div>
+  `;
+  return div;
+};
+legend.addTo(map);
+
+// Default info text
+document.getElementById("info-content").innerHTML = `
+  <p>Click on the map to analyse nearest facilities.</p>
+`;
+
+// Load facilities GeoJSON
+fetch("livemap.geojson")
+  .then(response => response.json())
+  .then(data => {
+    facilitiesData = data;
+
+    const facilityLayer = L.geoJSON(data, {
+      pointToLayer: function (feature, latlng) {
+        let color = "blue";
+        const type = feature.properties.facility;
+        if (type === "PWMU") color = "green";
+        if (type === "MRF") color = "orange";
+        if (type === "WasteBank") color = "purple";
+        if (type === "Office") color = "red";
+
+        return L.circleMarker(latlng, {
+          radius: 7,
+          fillColor: color,
+          color: "#000",
+          weight: 1,
+          fillOpacity: 0.9
+        });
+      },
+      onEachFeature: function (feature, layer) {
+        layer.bindPopup("<b>Facility:</b> " + feature.properties.facility);
+      }
+    }).addTo(map);
+
+    if (facilityLayer.getBounds && facilityLayer.getBounds().isValid()) {
+      map.fitBounds(facilityLayer.getBounds());
+    }
+  })
+  .catch(err => {
+    console.error("Failed to load livemap.geojson:", err);
+  });
+
+// Find nearest facility of a given type to the villageLatLng
+function findNearestFacility(villageLatLng, facilityType) {
+  if (!facilitiesData || !facilitiesData.features) return { location: null, distance: Infinity };
+
+  let minDistance = Infinity;
+  let nearestLatLng = null;
+
+  facilitiesData.features.forEach(feature => {
+    if (feature.properties && feature.properties.facility === facilityType) {
+      const coords = feature.geometry.coordinates;
+      const fLatLng = L.latLng(coords[1], coords[0]);
+      const distance = villageLatLng.distanceTo(fLatLng);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestLatLng = fLatLng;
+      }
+    }
+  });
+
+  return { location: nearestLatLng, distance: minDistance };
+}
+
+// Draw route using OpenRouteService (driving-car)
+function drawRouteToPWMU(startLatLng, endLatLng) {
+  if (!endLatLng) return;
+
+  if (routeLayer) {
+    map.removeLayer(routeLayer);
+    routeLayer = null;
+  }
+
+  const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImMzZjlkN2QwOGY0ZDQwMWY5YmQxYTA3YzgyNmYxNjliIiwiaCI6Im11cm11cjY0In0=";
+  const url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson";
+  const body = {
+    coordinates: [
+      [startLatLng.lng, startLatLng.lat],
+      [endLatLng.lng, endLatLng.lat]
+    ]
+  };
+
+  fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": apiKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (!data || !data.features || data.features.length === 0) return;
+      routeLayer = L.geoJSON(data, {
+        style: { color: "blue", weight: 5 }
+      }).addTo(map);
+      if (routeLayer.getBounds) {
+        map.fitBounds(routeLayer.getBounds());
+      }
+    })
+    .catch(err => {
+      console.error("ORS routing error:", err);
+    });
+}
+
+// Handle selecting a village location (either from click or goToCoordinates)
+function handleVillageSelection(villageLatLng) {
+  if (!villageLatLng) return;
+
+  // Remove previous marker
+  if (villageMarker) {
+    map.removeLayer(villageMarker);
+    villageMarker = null;
+  }
+
+  // Add village marker
+  villageMarker = L.marker(villageLatLng).addTo(map).bindPopup("Selected location").openPopup();
+
+  // Find nearest facilities
+  const nearestPWMU = findNearestFacility(villageLatLng, "PWMU");
+  const nearestMRF = findNearestFacility(villageLatLng, "MRF");
+  const nearestWB = findNearestFacility(villageLatLng, "WasteBank");
+  const nearestOffice = findNearestFacility(villageLatLng, "Office");
+
+  // Draw route to nearest PWMU if available
+  if (nearestPWMU.location) {
+    drawRouteToPWMU(villageLatLng, nearestPWMU.location);
+  }
+
+  // Update info panel
+  function fmt(d) { return isFinite(d) ? (d / 1000).toFixed(2) + " km" : "N/A"; }
+
+  document.getElementById("info-content").innerHTML = `
+    <b>Selected Location</b><br><br>
+    Latitude: ${villageLatLng.lat.toFixed(5)}<br>
+    Longitude: ${villageLatLng.lng.toFixed(5)}<br><br>
+    <b>Nearest Facilities</b><br>
+    PWMU: ${fmt(nearestPWMU.distance)}<br>
+    MRF: ${fmt(nearestMRF.distance)}<br>
+    Waste Bank: ${fmt(nearestWB.distance)}<br>
+    WWS Office: ${fmt(nearestOffice.distance)}
+  `;
+}
+
+// Map click handler
+map.on('click', function(e) {
+  handleVillageSelection(e.latlng);
+});
+
+// Go to coordinates button handler
+function goToCoordinates() {
+  const latStr = document.getElementById("lat").value.trim();
+  const lngStr = document.getElementById("lng").value.trim();
+  const lat = parseFloat(latStr);
+  const lng = parseFloat(lngStr);
+  if (isNaN(lat) || isNaN(lng)) {
+    alert("Please enter valid numeric latitude and longitude.");
+    return;
+  }
+  const latlng = L.latLng(lat, lng);
+  map.setView(latlng, 13);
+  handleVillageSelection(latlng);
+}
+
+// Expose function to global scope for inline button onclick
+window.goToCoordinates = goToCoordinates;
+</script>
+
+</body>
+</html>
