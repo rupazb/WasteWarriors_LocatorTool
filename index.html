@@ -112,7 +112,9 @@ const icons = {
 let map = L.map('map', { zoomControl: false }).setView([30.3, 78.0], 8);
 let facilitiesData = null;
 let villageMarker = null;
-let routeLayer = null;
+// changed: support multiple route layers (one per facility type) and keep selected village
+let routeLayers = {}; 
+let selectedVillage = null;
 
 // Add basemap
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -139,10 +141,37 @@ legend.onAdd = function(map) {
 };
 legend.addTo(map);
 
-// Default info text
+// Default info text (now includes route toggles)
 document.getElementById("info-content").innerHTML = `
   <p>Click on the map to analyse nearest facilities.</p>
+  <div style="margin-top:8px;">
+    <b>Show routes:</b><br>
+    <label><input type="checkbox" id="cb-PWMU" checked> PWMU</label><br>
+    <label><input type="checkbox" id="cb-MRF"> MRF</label><br>
+    <label><input type="checkbox" id="cb-WasteBank"> Waste Bank</label><br>
+    <label><input type="checkbox" id="cb-Office"> WWS Office</label>
+  </div>
 `;
+
+// helper: facility display order/types and colors
+const FAC_TYPES = ['PWMU','MRF','WasteBank','Office'];
+const ROUTE_COLORS = { PWMU: 'blue', MRF: 'orange', WasteBank: 'purple', Office: 'red' };
+
+// attach toggle handlers (work even before a village is selected)
+FAC_TYPES.forEach(type => {
+  const el = document.getElementById(`cb-${type}`);
+  if (el) {
+    el.addEventListener('change', () => {
+      if (!selectedVillage) return;
+      if (el.checked) {
+        const nearest = findNearestFacility(selectedVillage, type);
+        if (nearest.location) drawRouteForType(selectedVillage, nearest.location, type);
+      } else {
+        removeRoute(type);
+      }
+    });
+  }
+});
 
 // Load facilities GeoJSON
 fetch("livemap.geojson")
@@ -202,14 +231,11 @@ function findNearestFacility(villageLatLng, facilityType) {
   return { location: nearestLatLng, distance: minDistance };
 }
 
-// Draw route using OpenRouteService (driving-car)
-function drawRouteToPWMU(startLatLng, endLatLng) {
+// changed: generic draw route routine (creates routeLayers[type])
+function drawRouteForType(startLatLng, endLatLng, type) {
   if (!endLatLng) return;
-
-  if (routeLayer) {
-    map.removeLayer(routeLayer);
-    routeLayer = null;
-  }
+  // remove old layer if present
+  removeRoute(type);
 
   const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImMzZjlkN2QwOGY0ZDQwMWY5YmQxYTA3YzgyNmYxNjliIiwiaCI6Im11cm11cjY0In0=";
   const url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson";
@@ -231,11 +257,15 @@ function drawRouteToPWMU(startLatLng, endLatLng) {
     .then(res => res.json())
     .then(data => {
       if (!data || !data.features || data.features.length === 0) return;
-      routeLayer = L.geoJSON(data, {
-        style: { color: "blue", weight: 5 }
+      const layer = L.geoJSON(data, {
+        style: { color: ROUTE_COLORS[type] || 'blue', weight: 5 }
       }).addTo(map);
-      if (routeLayer.getBounds) {
-        map.fitBounds(routeLayer.getBounds());
+      routeLayers[type] = layer;
+
+      // adjust view to show route + marker (merge bounds of all active layers and village marker)
+      const group = L.featureGroup(Object.values(routeLayers).concat(villageMarker ? [villageMarker] : []));
+      if (group.getBounds && group.getBounds().isValid()) {
+        map.fitBounds(group.getBounds());
       }
     })
     .catch(err => {
@@ -243,9 +273,17 @@ function drawRouteToPWMU(startLatLng, endLatLng) {
     });
 }
 
+function removeRoute(type) {
+  if (routeLayers[type]) {
+    map.removeLayer(routeLayers[type]);
+    delete routeLayers[type];
+  }
+}
+
 // Handle selecting a village location (either from click or goToCoordinates)
 function handleVillageSelection(villageLatLng) {
   if (!villageLatLng) return;
+  selectedVillage = villageLatLng;
 
   // Remove previous marker
   if (villageMarker) {
@@ -253,33 +291,65 @@ function handleVillageSelection(villageLatLng) {
     villageMarker = null;
   }
 
+  // Remove all existing route layers - we'll re-add based on toggles
+  FAC_TYPES.forEach(t => removeRoute(t));
+
   // Add village marker
   villageMarker = L.marker(villageLatLng).addTo(map).bindPopup("Selected location").openPopup();
 
   // Find nearest facilities
-  const nearestPWMU = findNearestFacility(villageLatLng, "PWMU");
-  const nearestMRF = findNearestFacility(villageLatLng, "MRF");
-  const nearestWB = findNearestFacility(villageLatLng, "WasteBank");
-  const nearestOffice = findNearestFacility(villageLatLng, "Office");
+  const nearest = {};
+  FAC_TYPES.forEach(type => {
+    nearest[type] = findNearestFacility(villageLatLng, type);
+  });
 
-  // Draw route to nearest PWMU if available
-  if (nearestPWMU.location) {
-    drawRouteToPWMU(villageLatLng, nearestPWMU.location);
-  }
+  // Update info panel (includes toggles). Keep checkbox states if possible.
+  const currentStates = {};
+  FAC_TYPES.forEach(type => {
+    const cb = document.getElementById(`cb-${type}`);
+    currentStates[type] = cb ? cb.checked : false;
+  });
 
-  // Update info panel
   function fmt(d) { return isFinite(d) ? (d / 1000).toFixed(2) + " km" : "N/A"; }
 
   document.getElementById("info-content").innerHTML = `
-    <b>Selected Location</b><br><br>
-    Latitude: ${villageLatLng.lat.toFixed(5)}<br>
-    Longitude: ${villageLatLng.lng.toFixed(5)}<br><br>
-    <b>Nearest Facilities - by Road</b><br>
-    PWMU: ${fmt(nearestPWMU.distance)}<br>
-    MRF: ${fmt(nearestMRF.distance)}<br>
-    Waste Bank: ${fmt(nearestWB.distance)}<br>
-    WWS Office: ${fmt(nearestOffice.distance)}
+    <div>
+      <b>Selected Location</b><br><br>
+      Latitude: ${villageLatLng.lat.toFixed(5)}<br>
+      Longitude: ${villageLatLng.lng.toFixed(5)}<br><br>
+      <b>Nearest Facilities - by Road</b><br>
+      PWMU: ${fmt(nearest['PWMU'].distance)}<br>
+      MRF: ${fmt(nearest['MRF'].distance)}<br>
+      Waste Bank: ${fmt(nearest['WasteBank'].distance)}<br>
+      WWS Office: ${fmt(nearest['Office'].distance)}
+    </div>
+    <div style="margin-top:8px;">
+      <b>Show routes:</b><br>
+      <label><input type="checkbox" id="cb-PWMU" ${currentStates['PWMU'] ? 'checked' : ''}> PWMU</label><br>
+      <label><input type="checkbox" id="cb-MRF" ${currentStates['MRF'] ? 'checked' : ''}> MRF</label><br>
+      <label><input type="checkbox" id="cb-WasteBank" ${currentStates['WasteBank'] ? 'checked' : ''}> Waste Bank</label><br>
+      <label><input type="checkbox" id="cb-Office" ${currentStates['Office'] ? 'checked' : ''}> WWS Office</label>
+    </div>
   `;
+
+  // Attach handlers for the newly created checkboxes and draw requested routes
+  FAC_TYPES.forEach(type => {
+    const el = document.getElementById(`cb-${type}`);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      if (el.checked) {
+        const nearestType = nearest[type];
+        if (nearestType && nearestType.location) drawRouteForType(villageLatLng, nearestType.location, type);
+      } else {
+        removeRoute(type);
+      }
+    });
+    // if checked, draw the route immediately
+    if (el.checked) {
+      const nearestType = nearest[type];
+      if (nearestType && nearestType.location) drawRouteForType(villageLatLng, nearestType.location, type);
+    }
+  });
 }
 
 // Map click handler
