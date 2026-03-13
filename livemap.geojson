@@ -30,7 +30,6 @@
 { "type": "Feature", "properties": { "Name": "Waste Bank", "facility": "WasteBank" }, "geometry": { "type": "Point", "coordinates": [ 78.186864, 31.07453997 ] } },
 { "type": "Feature", "properties": { "Name": "PWMU MRF", "facility": "MRF" }, "geometry": { "type": "Point", "coordinates": [ 78.11211444, 30.37092106 ] } },
 { "type": "Feature", "properties": { "Name": "Harrawala MRF", "facility": "MRF" }, "geometry": { "type": "Point", "coordinates": [ 78.09103742, 30.25270537 ] } },
-{ "type": "Feature", "properties": { "Name": "PWMU", "facility": "WasteBank" }, "geometry": null },
 { "type": "Feature", "properties": { "Name": "Waste Bank", "facility": "WasteBank" }, "geometry": { "type": "Point", "coordinates": [ 77.16813, 32.311621 ] } },
 { "type": "Feature", "properties": { "Name": "Waste Bank", "facility": "WasteBank" }, "geometry": { "type": "Point", "coordinates": [ 77.4372089, 30.6001435 ] } },
 { "type": "Feature", "properties": { "Name": "Purola MRF", "facility": "MRF" }, "geometry": { "type": "Point", "coordinates": [ 78.08925, 30.8851389 ] } },
