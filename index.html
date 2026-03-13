@@ -112,9 +112,9 @@ const icons = {
 let map = L.map('map', { zoomControl: false }).setView([30.3, 78.0], 8);
 let facilitiesData = null;
 let villageMarker = null;
-// changed: support multiple route layers (one per facility type) and keep selected village
 let routeLayers = {}; 
 let selectedVillage = null;
+let dataLoaded = false; // NEW: indicates GeoJSON loaded
 
 // Add basemap
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -141,15 +141,15 @@ legend.onAdd = function(map) {
 };
 legend.addTo(map);
 
-// Default info text (now includes route toggles)
+// Default info text (checkboxes disabled until data loads)
 document.getElementById("info-content").innerHTML = `
-  <p>Click on the map to analyse nearest facilities.</p>
+  <p>Loading facilities… please wait.</p>
   <div style="margin-top:8px;">
     <b>Show routes:</b><br>
-    <label><input type="checkbox" id="cb-PWMU" checked> PWMU</label><br>
-    <label><input type="checkbox" id="cb-MRF"> MRF</label><br>
-    <label><input type="checkbox" id="cb-WasteBank"> Waste Bank</label><br>
-    <label><input type="checkbox" id="cb-Office"> WWS Office</label>
+    <label><input type="checkbox" id="cb-PWMU" checked disabled> PWMU</label><br>
+    <label><input type="checkbox" id="cb-MRF" disabled> MRF</label><br>
+    <label><input type="checkbox" id="cb-WasteBank" disabled> Waste Bank</label><br>
+    <label><input type="checkbox" id="cb-Office" disabled> WWS Office</label>
   </div>
 `;
 
@@ -157,19 +157,31 @@ document.getElementById("info-content").innerHTML = `
 const FAC_TYPES = ['PWMU','MRF','WasteBank','Office'];
 const ROUTE_COLORS = { PWMU: 'blue', MRF: 'orange', WasteBank: 'purple', Office: 'red' };
 
-// attach toggle handlers (work even before a village is selected)
-FAC_TYPES.forEach(type => {
-  const el = document.getElementById(`cb-${type}`);
-  if (el) {
-    el.addEventListener('change', () => {
-      if (!selectedVillage) return;
-      if (el.checked) {
-        const nearest = findNearestFacility(selectedVillage, type);
-        if (nearest.location) drawRouteForType(selectedVillage, nearest.location, type);
-      } else {
-        removeRoute(type);
-      }
-    });
+// Use event delegation on the info panel so handlers persist when innerHTML is replaced
+document.getElementById('info-content').addEventListener('change', (e) => {
+  if (!e.target || !e.target.id) return;
+  if (!e.target.id.startsWith('cb-')) return;
+  const type = e.target.id.replace('cb-','');
+  if (!selectedVillage) {
+    alert('Select a location first (click on the map or use Go to Coordinates).');
+    // reset checkbox state to unchecked if there is no village
+    e.target.checked = false;
+    return;
+  }
+  if (!dataLoaded) {
+    alert('Facilities still loading, please wait.');
+    e.target.checked = false;
+    return;
+  }
+  if (e.target.checked) {
+    const nearest = findNearestFacility(selectedVillage, type);
+    if (nearest.location) drawRouteForType(selectedVillage, nearest.location, type);
+    else {
+      alert('No facility of type ' + type + ' found in the dataset.');
+      e.target.checked = false;
+    }
+  } else {
+    removeRoute(type);
   }
 });
 
@@ -178,6 +190,7 @@ fetch("livemap.geojson")
   .then(response => response.json())
   .then(data => {
     facilitiesData = data;
+    dataLoaded = true;
 
     const facilityLayer = L.geoJSON(data, {
       pointToLayer: function (feature, latlng) {
@@ -201,12 +214,28 @@ fetch("livemap.geojson")
       }
     }).addTo(map);
 
+    // enable checkboxes now that data is ready
+    document.querySelectorAll('#info-content input[type=checkbox]').forEach(cb => cb.disabled = false);
+
     if (facilityLayer.getBounds && facilityLayer.getBounds().isValid()) {
       map.fitBounds(facilityLayer.getBounds());
     }
+
+    // replace initial "loading" info with ready text (preserve checkbox states via delegation)
+    document.getElementById("info-content").innerHTML = `
+      <p>Click on the map to analyse nearest facilities.</p>
+      <div style="margin-top:8px;">
+        <b>Show routes:</b><br>
+        <label><input type="checkbox" id="cb-PWMU" checked> PWMU</label><br>
+        <label><input type="checkbox" id="cb-MRF"> MRF</label><br>
+        <label><input type="checkbox" id="cb-WasteBank"> Waste Bank</label><br>
+        <label><input type="checkbox" id="cb-Office"> WWS Office</label>
+      </div>
+    `;
   })
   .catch(err => {
     console.error("Failed to load livemap.geojson:", err);
+    document.getElementById("info-content").innerHTML = "<p style='color:red'>Failed to load facilities file.</p>";
   });
 
 // Find nearest facility of a given type to the villageLatLng
@@ -256,7 +285,14 @@ function drawRouteForType(startLatLng, endLatLng, type) {
   })
     .then(res => res.json())
     .then(data => {
-      if (!data || !data.features || data.features.length === 0) return;
+      if (!data || !data.features || data.features.length === 0) {
+        console.warn('No route returned from ORS for', type, data);
+        alert('Routing service returned no route. Check API key / quota.');
+        // uncheck checkbox if present
+        const cb = document.getElementById(`cb-${type}`);
+        if (cb) cb.checked = false;
+        return;
+      }
       const layer = L.geoJSON(data, {
         style: { color: ROUTE_COLORS[type] || 'blue', weight: 5 }
       }).addTo(map);
@@ -270,6 +306,9 @@ function drawRouteForType(startLatLng, endLatLng, type) {
     })
     .catch(err => {
       console.error("ORS routing error:", err);
+      alert('Routing request failed. Check console for details.');
+      const cb = document.getElementById(`cb-${type}`);
+      if (cb) cb.checked = false;
     });
 }
 
@@ -297,6 +336,11 @@ function handleVillageSelection(villageLatLng) {
   // Add village marker
   villageMarker = L.marker(villageLatLng).addTo(map).bindPopup("Selected location").openPopup();
 
+  if (!dataLoaded) {
+    document.getElementById("info-content").innerHTML = "<p>Facilities are still loading. Please wait a moment and toggle routes again.</p>";
+    return;
+  }
+
   // Find nearest facilities
   const nearest = {};
   FAC_TYPES.forEach(type => {
@@ -317,7 +361,7 @@ function handleVillageSelection(villageLatLng) {
       <b>Selected Location</b><br><br>
       Latitude: ${villageLatLng.lat.toFixed(5)}<br>
       Longitude: ${villageLatLng.lng.toFixed(5)}<br><br>
-      <b>Nearest Facilities - by Road</b><br>
+      <b>Nearest Facilities - straight-line</b><br>
       PWMU: ${fmt(nearest['PWMU'].distance)}<br>
       MRF: ${fmt(nearest['MRF'].distance)}<br>
       Waste Bank: ${fmt(nearest['WasteBank'].distance)}<br>
@@ -332,19 +376,10 @@ function handleVillageSelection(villageLatLng) {
     </div>
   `;
 
-  // Attach handlers for the newly created checkboxes and draw requested routes
+  // After replacing the panel, trigger drawing for any checked boxes (delegated handler won't auto-run)
   FAC_TYPES.forEach(type => {
     const el = document.getElementById(`cb-${type}`);
     if (!el) return;
-    el.addEventListener('change', () => {
-      if (el.checked) {
-        const nearestType = nearest[type];
-        if (nearestType && nearestType.location) drawRouteForType(villageLatLng, nearestType.location, type);
-      } else {
-        removeRoute(type);
-      }
-    });
-    // if checked, draw the route immediately
     if (el.checked) {
       const nearestType = nearest[type];
       if (nearestType && nearestType.location) drawRouteForType(villageLatLng, nearestType.location, type);
