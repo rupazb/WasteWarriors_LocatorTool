@@ -90,41 +90,27 @@
 
 <script>
 const icons = {
-  PWMU: L.icon({
-    iconUrl: 'icons/pwmu.png',
-    iconSize: [24, 24]
-  }),
-  MRF: L.icon({
-    iconUrl: 'icons/mrf.png',
-    iconSize: [24, 24]
-  }),
-  WasteBank: L.icon({
-    iconUrl: 'icons/wastebank.png',
-    iconSize: [24, 24]
-  }),
-  Office: L.icon({
-    iconUrl: 'icons/office.png',
-    iconSize: [24, 24]
-  })
+  PWMU: L.icon({ iconUrl: 'icons/pwmu.png', iconSize: [24, 24] }),
+  MRF: L.icon({ iconUrl: 'icons/mrf.png', iconSize: [24, 24] }),
+  WasteBank: L.icon({ iconUrl: 'icons/wastebank.png', iconSize: [24, 24] }),
+  Office: L.icon({ iconUrl: 'icons/office.png', iconSize: [24, 24] })
 };
 
 // Globals
 let map = L.map('map', { zoomControl: false }).setView([30.3, 78.0], 8);
 let facilitiesData = null;
 let villageMarker = null;
-let routeLayers = {}; 
+let routeLayers = {};
+let routeDistances = {}; // stores road distance (meters) returned by ORS per type
 let selectedVillage = null;
-let dataLoaded = false; // NEW: indicates GeoJSON loaded
+let dataLoaded = false;
 
-// Add basemap
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors'
 }).addTo(map);
 
-// add zoom control at bottom-left
 L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
-// added: legend control at bottom-right
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function(map) {
   const div = L.DomUtil.create('div', 'legend');
@@ -141,7 +127,7 @@ legend.onAdd = function(map) {
 };
 legend.addTo(map);
 
-// Default info text (checkboxes disabled until data loads)
+// initial info panel while loading
 document.getElementById("info-content").innerHTML = `
   <p>Loading facilities… please wait.</p>
   <div style="margin-top:8px;">
@@ -153,18 +139,16 @@ document.getElementById("info-content").innerHTML = `
   </div>
 `;
 
-// helper: facility display order/types and colors
 const FAC_TYPES = ['PWMU','MRF','WasteBank','Office'];
 const ROUTE_COLORS = { PWMU: 'blue', MRF: 'orange', WasteBank: 'purple', Office: 'red' };
 
-// Use event delegation on the info panel so handlers persist when innerHTML is replaced
+// delegated checkbox handler persists across panel updates
 document.getElementById('info-content').addEventListener('change', (e) => {
   if (!e.target || !e.target.id) return;
   if (!e.target.id.startsWith('cb-')) return;
   const type = e.target.id.replace('cb-','');
   if (!selectedVillage) {
     alert('Select a location first (click on the map or use Go to Coordinates).');
-    // reset checkbox state to unchecked if there is no village
     e.target.checked = false;
     return;
   }
@@ -182,10 +166,13 @@ document.getElementById('info-content').addEventListener('change', (e) => {
     }
   } else {
     removeRoute(type);
+    // clear stored road distance
+    delete routeDistances[type];
+    updateInfoPanel();
   }
 });
 
-// Load facilities GeoJSON
+// Load GeoJSON
 fetch("livemap.geojson")
   .then(response => response.json())
   .then(data => {
@@ -214,14 +201,13 @@ fetch("livemap.geojson")
       }
     }).addTo(map);
 
-    // enable checkboxes now that data is ready
     document.querySelectorAll('#info-content input[type=checkbox]').forEach(cb => cb.disabled = false);
 
     if (facilityLayer.getBounds && facilityLayer.getBounds().isValid()) {
       map.fitBounds(facilityLayer.getBounds());
     }
 
-    // replace initial "loading" info with ready text (preserve checkbox states via delegation)
+    // show ready panel
     document.getElementById("info-content").innerHTML = `
       <p>Click on the map to analyse nearest facilities.</p>
       <div style="margin-top:8px;">
@@ -238,7 +224,7 @@ fetch("livemap.geojson")
     document.getElementById("info-content").innerHTML = "<p style='color:red'>Failed to load facilities file.</p>";
   });
 
-// Find nearest facility of a given type to the villageLatLng
+// Find nearest by straight-line
 function findNearestFacility(villageLatLng, facilityType) {
   if (!facilitiesData || !facilitiesData.features) return { location: null, distance: Infinity };
 
@@ -260,10 +246,9 @@ function findNearestFacility(villageLatLng, facilityType) {
   return { location: nearestLatLng, distance: minDistance };
 }
 
-// changed: generic draw route routine (creates routeLayers[type])
+// Draw route with ORS, store road distance, then update panel
 function drawRouteForType(startLatLng, endLatLng, type) {
   if (!endLatLng) return;
-  // remove old layer if present
   removeRoute(type);
 
   const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImMzZjlkN2QwOGY0ZDQwMWY5YmQxYTA3YzgyNmYxNjliIiwiaCI6Im11cm11cjY0In0=";
@@ -288,9 +273,10 @@ function drawRouteForType(startLatLng, endLatLng, type) {
       if (!data || !data.features || data.features.length === 0) {
         console.warn('No route returned from ORS for', type, data);
         alert('Routing service returned no route. Check API key / quota.');
-        // uncheck checkbox if present
         const cb = document.getElementById(`cb-${type}`);
         if (cb) cb.checked = false;
+        delete routeDistances[type];
+        updateInfoPanel();
         return;
       }
       const layer = L.geoJSON(data, {
@@ -298,17 +284,28 @@ function drawRouteForType(startLatLng, endLatLng, type) {
       }).addTo(map);
       routeLayers[type] = layer;
 
-      // adjust view to show route + marker (merge bounds of all active layers and village marker)
+      // extract road distance (meters) from ORS response; fallback to null
+      const roadDist = data.features[0] && data.features[0].properties && data.features[0].properties.summary && data.features[0].properties.summary.distance
+        ? data.features[0].properties.summary.distance
+        : null;
+      if (roadDist != null) routeDistances[type] = roadDist;
+
+      // adjust view to show route + marker
       const group = L.featureGroup(Object.values(routeLayers).concat(villageMarker ? [villageMarker] : []));
       if (group.getBounds && group.getBounds().isValid()) {
         map.fitBounds(group.getBounds());
       }
+
+      // update panel now that we have road distance
+      updateInfoPanel();
     })
     .catch(err => {
       console.error("ORS routing error:", err);
       alert('Routing request failed. Check console for details.');
       const cb = document.getElementById(`cb-${type}`);
       if (cb) cb.checked = false;
+      delete routeDistances[type];
+      updateInfoPanel();
     });
 }
 
@@ -317,55 +314,46 @@ function removeRoute(type) {
     map.removeLayer(routeLayers[type]);
     delete routeLayers[type];
   }
+  delete routeDistances[type];
 }
 
-// Handle selecting a village location (either from click or goToCoordinates)
-function handleVillageSelection(villageLatLng) {
-  if (!villageLatLng) return;
-  selectedVillage = villageLatLng;
-
-  // Remove previous marker
-  if (villageMarker) {
-    map.removeLayer(villageMarker);
-    villageMarker = null;
-  }
-
-  // Remove all existing route layers - we'll re-add based on toggles
-  FAC_TYPES.forEach(t => removeRoute(t));
-
-  // Add village marker
-  villageMarker = L.marker(villageLatLng).addTo(map).bindPopup("Selected location").openPopup();
-
-  if (!dataLoaded) {
-    document.getElementById("info-content").innerHTML = "<p>Facilities are still loading. Please wait a moment and toggle routes again.</p>";
+// Build and update info panel content (shows straight-line and road distance if available)
+function updateInfoPanel() {
+  if (!selectedVillage) {
+    document.getElementById("info-content").innerHTML = `<p>Click on the map to analyse nearest facilities.</p>`;
     return;
   }
 
-  // Find nearest facilities
+  // compute nearest (straight-line) for each type
   const nearest = {};
   FAC_TYPES.forEach(type => {
-    nearest[type] = findNearestFacility(villageLatLng, type);
+    nearest[type] = findNearestFacility(selectedVillage, type);
   });
 
-  // Update info panel (includes toggles). Keep checkbox states if possible.
+  // preserve checkbox states
   const currentStates = {};
   FAC_TYPES.forEach(type => {
     const cb = document.getElementById(`cb-${type}`);
     currentStates[type] = cb ? cb.checked : false;
   });
 
-  function fmt(d) { return isFinite(d) ? (d / 1000).toFixed(2) + " km" : "N/A"; }
+  function fmtLine(d) { return isFinite(d) ? (d / 1000).toFixed(2) + " km (straight)" : "N/A"; }
+  function fmtRoad(d) { return (d != null && isFinite(d)) ? (d / 1000).toFixed(2) + " km (road)" : "—"; }
+
+  // build list rows
+  const rows = FAC_TYPES.map(type => {
+    const line = nearest[type] && isFinite(nearest[type].distance) ? fmtLine(nearest[type].distance) : "N/A";
+    const road = routeDistances[type] != null ? fmtRoad(routeDistances[type]) : "—";
+    return `<div style="margin-top:6px;"><b>${type}:</b> ${line} ${road !== '—' ? '<br><small>Road: ' + road + '</small>' : ''}</div>`;
+  }).join("");
 
   document.getElementById("info-content").innerHTML = `
     <div>
       <b>Selected Location</b><br><br>
-      Latitude: ${villageLatLng.lat.toFixed(5)}<br>
-      Longitude: ${villageLatLng.lng.toFixed(5)}<br><br>
-      <b>Nearest Facilities - straight-line</b><br>
-      PWMU: ${fmt(nearest['PWMU'].distance)}<br>
-      MRF: ${fmt(nearest['MRF'].distance)}<br>
-      Waste Bank: ${fmt(nearest['WasteBank'].distance)}<br>
-      WWS Office: ${fmt(nearest['Office'].distance)}
+      Latitude: ${selectedVillage.lat.toFixed(5)}<br>
+      Longitude: ${selectedVillage.lng.toFixed(5)}<br><br>
+      <b>Nearest Facilities</b><br>
+      ${rows}
     </div>
     <div style="margin-top:8px;">
       <b>Show routes:</b><br>
@@ -375,24 +363,43 @@ function handleVillageSelection(villageLatLng) {
       <label><input type="checkbox" id="cb-Office" ${currentStates['Office'] ? 'checked' : ''}> WWS Office</label>
     </div>
   `;
+}
 
-  // After replacing the panel, trigger drawing for any checked boxes (delegated handler won't auto-run)
+// Handle village selection
+function handleVillageSelection(villageLatLng) {
+  if (!villageLatLng) return;
+  selectedVillage = villageLatLng;
+
+  if (villageMarker) {
+    map.removeLayer(villageMarker);
+    villageMarker = null;
+  }
+
+  FAC_TYPES.forEach(t => removeRoute(t));
+  routeDistances = {};
+  villageMarker = L.marker(villageLatLng).addTo(map).bindPopup("Selected location").openPopup();
+
+  if (!dataLoaded) {
+    document.getElementById("info-content").innerHTML = "<p>Facilities are still loading. Please wait a moment and toggle routes again.</p>";
+    return;
+  }
+
+  updateInfoPanel();
+
+  // trigger drawing for checked boxes
   FAC_TYPES.forEach(type => {
     const el = document.getElementById(`cb-${type}`);
-    if (!el) return;
-    if (el.checked) {
-      const nearestType = nearest[type];
+    if (el && el.checked) {
+      const nearestType = findNearestFacility(villageLatLng, type);
       if (nearestType && nearestType.location) drawRouteForType(villageLatLng, nearestType.location, type);
     }
   });
 }
 
-// Map click handler
 map.on('click', function(e) {
   handleVillageSelection(e.latlng);
 });
 
-// Go to coordinates button handler
 function goToCoordinates() {
   const latStr = document.getElementById("lat").value.trim();
   const lngStr = document.getElementById("lng").value.trim();
@@ -407,7 +414,6 @@ function goToCoordinates() {
   handleVillageSelection(latlng);
 }
 
-// Expose function to global scope for inline button onclick
 window.goToCoordinates = goToCoordinates;
 </script>
 
